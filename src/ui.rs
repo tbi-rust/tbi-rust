@@ -112,7 +112,7 @@ impl TorBrowserBuilder {
                 ui.set_min_width(500.0);
                 match self.state.clone() {
                     AppState::Idle => self.draw_idle(ui),
-                    AppState::Checking => Self::draw_checking(ui),
+                    AppState::Checking => self.draw_checking(ui),
                     AppState::AlreadyInstalled { ref app_path } => {
                         self.draw_already_installed(ui, app_path)
                     }
@@ -127,9 +127,9 @@ impl TorBrowserBuilder {
                         downloaded_mb,
                         total_mb,
                     } => self.draw_downloading(ui, progress, downloaded_mb, total_mb),
-                    AppState::Verifying => Self::draw_verifying(ui),
-                    AppState::VerifyingSignature => Self::draw_verifying_signature(ui),
-                    AppState::Installing { ref stage } => Self::draw_installing(ui, stage),
+                    AppState::Verifying => self.draw_verifying(ui),
+                    AppState::VerifyingSignature => self.draw_verifying_signature(ui),
+                    AppState::Installing { ref stage } => self.draw_installing(ui, stage),
                     AppState::Complete { app_path } => self.draw_complete(ui, &app_path),
                     AppState::Error(e) => self.draw_error(ui, &e),
                 }
@@ -371,19 +371,21 @@ impl TorBrowserBuilder {
         }
     }
 
-    pub(crate) fn draw_checking(ui: &mut egui::Ui) {
+    pub(crate) fn draw_checking(&self, ui: &mut egui::Ui) {
+        let text_primary = self.text_primary();
+        let text_secondary = self.text_secondary();
         Self::centered_status(ui, |ui| {
             ui.add(egui::Spinner::new().size(28.0).color(palette::PURPLE));
             ui.add_space(14.0);
             ui.label(
                 RichText::new("Checking for the latest release")
                     .size(16.0)
-                    .color(palette::TEXT_PRIMARY),
+                    .color(text_primary),
             );
             ui.label(
                 RichText::new("Contacting the Tor Project release service")
                     .size(13.0)
-                    .color(palette::TEXT_SECONDARY),
+                    .color(text_secondary),
             );
         });
     }
@@ -522,26 +524,84 @@ impl TorBrowserBuilder {
                 ui.add_space(8.0);
             }
 
+            // A release with neither a checksum nor a signature can't be
+            // checked against anything — install it and you're trusting
+            // the download completely unverified. That's rare (the Tor
+            // Project publishes both for every release) but if it ever
+            // happens, it needs to be impossible to miss and impossible
+            // to click through by accident.
+            let is_unverified = sha256.is_none() && sig_url.is_none();
+            if is_unverified {
+                ui.add_space(4.0);
+                egui::Frame::NONE
+                    .fill(self.warning_soft())
+                    .stroke(Stroke::new(1.0_f32, palette::WARNING))
+                    .corner_radius(egui::CornerRadius::same(10))
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let (icon_rect, _) =
+                                ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+                            icons::warning(&ui.painter(), icon_rect, palette::WARNING);
+                            ui.add_space(8.0);
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    RichText::new("This release can't be verified")
+                                        .size(13.5)
+                                        .strong()
+                                        .color(palette::WARNING),
+                                );
+                                ui.label(
+                                    RichText::new(
+                                        "No checksum or signature was published for this download, \
+                                         so there's nothing to check it against before installing.",
+                                    )
+                                    .size(12.0)
+                                    .color(text_secondary),
+                                );
+                            });
+                        });
+                        ui.add_space(8.0);
+                        ui.checkbox(
+                            &mut self.unverified_ack,
+                            RichText::new("I understand this download cannot be verified, and want to continue anyway")
+                                .size(12.5)
+                                .color(text_primary),
+                        );
+                    });
+                ui.add_space(12.0);
+            }
+
+            let continue_enabled = !is_unverified || self.unverified_ack;
             ui.add_space(8.0);
-            let continue_btn = ui.add_sized(
-                [ui.available_width(), 46.0],
-                egui::Button::new("")
-                    .fill(palette::PURPLE)
-                    .stroke(Stroke::NONE)
-                    .corner_radius(egui::CornerRadius::same(10)),
-            );
+            let continue_btn = ui
+                .add_enabled_ui(continue_enabled, |ui| {
+                    ui.add_sized(
+                        [ui.available_width(), 46.0],
+                        egui::Button::new("")
+                            .fill(palette::PURPLE)
+                            .stroke(Stroke::NONE)
+                            .corner_radius(egui::CornerRadius::same(10)),
+                    )
+                })
+                .inner;
             let rect = continue_btn.rect;
+            let btn_text_color = if continue_enabled {
+                Color32::WHITE
+            } else {
+                Color32::WHITE.gamma_multiply(0.55)
+            };
             let icon_rect = Rect::from_center_size(
                 egui::pos2(rect.center().x - 48.0, rect.center().y),
                 egui::vec2(16.0, 16.0),
             );
-            icons::check(&ui.painter(), icon_rect, Color32::WHITE);
+            icons::check(&ui.painter(), icon_rect, btn_text_color);
             ui.painter().text(
                 egui::pos2(rect.center().x - 30.0, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 "Continue",
                 egui::FontId::proportional(15.5),
-                Color32::WHITE,
+                btn_text_color,
             );
             if continue_btn.clicked() {
                 self.send_confirm(true);
@@ -617,53 +677,59 @@ impl TorBrowserBuilder {
         });
     }
 
-    pub(crate) fn draw_verifying(ui: &mut egui::Ui) {
+    pub(crate) fn draw_verifying(&self, ui: &mut egui::Ui) {
+        let text_primary = self.text_primary();
+        let text_secondary = self.text_secondary();
         Self::centered_status(ui, |ui| {
             ui.add(egui::Spinner::new().size(28.0).color(palette::PURPLE));
             ui.add_space(14.0);
             ui.label(
                 RichText::new("Verifying SHA-256 checksum")
                     .size(16.0)
-                    .color(palette::TEXT_PRIMARY),
+                    .color(text_primary),
             );
             ui.label(
                 RichText::new("Checking file integrity before installing")
                     .size(13.0)
-                    .color(palette::TEXT_SECONDARY),
+                    .color(text_secondary),
             );
         });
     }
 
-    pub(crate) fn draw_verifying_signature(ui: &mut egui::Ui) {
+    pub(crate) fn draw_verifying_signature(&self, ui: &mut egui::Ui) {
+        let text_primary = self.text_primary();
+        let text_secondary = self.text_secondary();
         Self::centered_status(ui, |ui| {
             ui.add(egui::Spinner::new().size(28.0).color(palette::PURPLE));
             ui.add_space(14.0);
             ui.label(
                 RichText::new("Verifying PGP signature")
                     .size(16.0)
-                    .color(palette::TEXT_PRIMARY),
+                    .color(text_primary),
             );
             ui.label(
-                RichText::new("Checking the Tor Project's cryptographic signature")
+                RichText::new("Checking against the bundled Tor Browser Developers key")
                     .size(13.0)
-                    .color(palette::TEXT_SECONDARY),
+                    .color(text_secondary),
             );
         });
     }
 
-    pub(crate) fn draw_installing(ui: &mut egui::Ui, stage: &str) {
+    pub(crate) fn draw_installing(&self, ui: &mut egui::Ui, stage: &str) {
+        let text_primary = self.text_primary();
+        let text_secondary = self.text_secondary();
         Self::centered_status(ui, |ui| {
             ui.add(egui::Spinner::new().size(28.0).color(palette::PURPLE));
             ui.add_space(14.0);
             ui.label(
                 RichText::new("Installing")
                     .size(16.0)
-                    .color(palette::TEXT_PRIMARY),
+                    .color(text_primary),
             );
             ui.label(
                 RichText::new(stage)
                     .size(13.0)
-                    .color(palette::TEXT_SECONDARY),
+                    .color(text_secondary),
             );
         });
     }

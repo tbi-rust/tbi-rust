@@ -16,6 +16,9 @@ pub(crate) mod palette {
     pub const SUCCESS: Color32 = Color32::from_rgb(24, 163, 90);
     pub const ERROR: Color32 = Color32::from_rgb(200, 45, 60);
     pub const GOLD: Color32 = Color32::from_rgb(214, 168, 40);
+    pub const WARNING: Color32 = Color32::from_rgb(196, 120, 20);
+    pub const WARNING_SOFT: Color32 = Color32::from_rgb(255, 243, 224);
+    pub const SUCCESS_SOFT: Color32 = Color32::from_rgb(224, 246, 234);
 }
 
 pub(crate) mod palette_dark {
@@ -27,6 +30,8 @@ pub(crate) mod palette_dark {
     pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(235, 230, 245);
     pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(160, 155, 170);
     pub const PURPLE_SOFT: Color32 = Color32::from_rgb(55, 20, 80);
+    pub const WARNING_SOFT: Color32 = Color32::from_rgb(58, 42, 16);
+    pub const SUCCESS_SOFT: Color32 = Color32::from_rgb(16, 46, 32);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

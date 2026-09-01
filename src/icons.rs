@@ -183,6 +183,23 @@ pub fn info(painter: &Painter, rect: Rect, color: Color32) {
     );
 }
 
+/// A warning triangle with an exclamation mark — used on the unverified-
+/// download banner. Not from an SVG file (none was provided for this),
+/// so it stays procedurally drawn to match `info()`'s visual weight.
+pub fn warning(painter: &Painter, rect: Rect, color: Color32) {
+    let s = Stroke::new((rect.width() * (2.0 / 24.0)).max(1.4), color);
+    let cx = rect.center().x;
+    let top = Pos2::new(cx, rect.top() + rect.height() * 0.12);
+    let bl = Pos2::new(rect.left() + rect.width() * 0.08, rect.bottom() - rect.height() * 0.1);
+    let br = Pos2::new(rect.right() - rect.width() * 0.08, rect.bottom() - rect.height() * 0.1);
+    painter.add(egui::Shape::closed_line(vec![top, bl, br], s));
+    let stem_top = Pos2::new(cx, rect.top() + rect.height() * 0.42);
+    let stem_bottom = Pos2::new(cx, rect.top() + rect.height() * 0.68);
+    painter.line_segment([stem_top, stem_bottom], s);
+    let dot_r = (rect.width() * 0.045).max(1.1);
+    painter.circle_filled(Pos2::new(cx, rect.bottom() - rect.height() * 0.22), dot_r, color);
+}
+
 /// A crescent moon — light-theme toggle indicator. `bg` is the color
 /// behind the icon, used to "cut" the crescent out of a filled circle.
 /// Not from an SVG file (none was provided for this), so it stays

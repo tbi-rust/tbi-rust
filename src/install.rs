@@ -9,10 +9,67 @@ use std::time::Duration;
 use sequoia_openpgp as openpgp;
 use openpgp::parse::{Parse, stream::*};
 use openpgp::policy::StandardPolicy;
+use openpgp::Fingerprint;
+use url::Url;
+use zeroize::Zeroizing;
 
 use crate::APP_VERSION;
 use crate::app::AppState;
 use crate::platform::{InstallScope, platform_label, release_json_filename, archive_extension, find_file};
+
+/// The Tor Browser Developers signing key, bundled directly into this
+/// binary rather than fetched from a keyserver at runtime. Sourced from
+/// the official torproject/torbrowser-launcher repository and its
+/// fingerprint hand-verified against the one published at
+/// https://support.torproject.org/tor-browser/getting-started/verifying-tor-browser/
+/// before being committed here. Bundling it (instead of trusting whatever
+/// a keyserver happens to hand back at install time) removes an entire
+/// class of attack where a compromised or spoofed keyserver response
+/// swaps in a different key.
+const TOR_SIGNING_KEY_BYTES: &[u8] = include_bytes!("assets/tor-browser-developers.asc");
+
+/// Expected fingerprint of the bundled key above. Checked against the
+/// parsed certificate every time it's loaded, so that if this constant
+/// and the embedded key file are ever accidentally edited out of sync
+/// with each other, verification fails loudly instead of silently
+/// trusting the wrong key.
+const TOR_SIGNING_KEY_FINGERPRINT: &str = "EF6E286DDA85EA2A4BA7DE684E2C6E8793298290";
+
+/// Every hostname a download or signature URL is allowed to come from.
+/// The release-info API only ever hands back URLs under torproject.org
+/// in normal operation; this exists purely as a defense-in-depth check
+/// against a compromised/spoofed API response redirecting the app
+/// somewhere else entirely.
+fn is_trusted_torproject_url(candidate: &str) -> bool {
+    let Ok(parsed) = Url::parse(candidate) else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    match parsed.host_str() {
+        Some(host) => host == "torproject.org" || host.ends_with(".torproject.org"),
+        None => false,
+    }
+}
+
+/// Builds a `reqwest` client that refuses to follow a redirect to any
+/// host outside torproject.org, so a compromised/mirrored response can't
+/// silently hand this app off to an attacker-controlled server mid-request.
+fn strict_client(timeout: Duration) -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .user_agent(format!("tor-browser-builder/{APP_VERSION}"))
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if is_trusted_torproject_url(attempt.url().as_str()) {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .build()
+        .map_err(|e| e.to_string())
+}
 
 /// Messages sent from the background worker thread back to the UI thread.
 pub(crate) enum WorkerEvent {
@@ -44,6 +101,11 @@ pub(crate) fn run_install_pipeline(
     tx: Sender<WorkerEvent>,
     confirm_rx: Receiver<bool>,
 ) {
+    // Wrap the password so its backing memory is overwritten with zeros
+    // the moment it goes out of scope, rather than lingering in freed
+    // heap memory (or swap) for an indeterminate time afterward.
+    let password = Zeroizing::new(password);
+
     let send_state = |s: AppState| {
         let _ = tx.send(WorkerEvent::State(s));
     };
@@ -177,11 +239,7 @@ fn fetch_release_info() -> Result<ReleaseInfo, String> {
         release_json_filename()
     );
 
-    let body: serde_json::Value = reqwest::blocking::Client::builder()
-        .user_agent(format!("tor-browser-builder/{APP_VERSION}"))
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())?
+    let body: serde_json::Value = strict_client(Duration::from_secs(20))?
         .get(&url)
         .send()
         .map_err(|e| e.to_string())?
@@ -221,6 +279,12 @@ fn fetch_release_info() -> Result<ReleaseInfo, String> {
         })?
         .to_string();
 
+    if !is_trusted_torproject_url(&binary_url) {
+        return Err(format!(
+            "refusing to use a download URL that isn't https and under torproject.org: {binary_url}"
+        ));
+    }
+
     // Not all API responses include a checksum field directly; when present
     // we use it, otherwise we skip the checksum step (the sig file, not
     // downloaded here, is the authoritative check — see the module doc).
@@ -239,15 +303,16 @@ fn fetch_release_info() -> Result<ReleaseInfo, String> {
 
     // Try to find a signature URL. The Tor Project provides .asc detached
     // signatures alongside release binaries.
+    // binary_url is already validated above, so the ".asc" fallback built
+    // from it is automatically trusted too. An explicit "sig" field from
+    // the response still gets its own check, since it isn't derived from
+    // an already-validated URL.
     let sig_url = body
         .get("sig")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .or_else(|| {
-            // Fallback: construct the signature URL from the binary URL
-            // by appending ".asc"
-            Some(format!("{binary_url}.asc"))
-        });
+        .filter(|s| is_trusted_torproject_url(s))
+        .or_else(|| Some(format!("{binary_url}.asc")));
 
     Ok(ReleaseInfo {
         version,
@@ -262,11 +327,12 @@ fn download_with_progress(
     dest: &Path,
     tx: &Sender<WorkerEvent>,
 ) -> Result<(), String> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(format!("tor-browser-builder/{APP_VERSION}"))
-        .timeout(Duration::from_secs(600))
-        .build()
-        .map_err(|e| e.to_string())?;
+    if !is_trusted_torproject_url(url) {
+        return Err(format!(
+            "refusing to download from a URL that isn't https and under torproject.org: {url}"
+        ));
+    }
+    let client = strict_client(Duration::from_secs(600))?;
 
     let mut response = client.get(url).send().map_err(|e| e.to_string())?;
     if !response.status().is_success() {
@@ -316,17 +382,21 @@ fn sha256_of_file(path: &Path) -> Result<String, String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-/// Verifies a detached PGP signature against a file using the
-/// Tor Browser Developers signing key.
+/// Verifies a detached PGP signature against a file using the bundled
+/// Tor Browser Developers signing key (see `TOR_SIGNING_KEY_BYTES` above).
 ///
-/// Downloads the key from keys.openpgp.org at runtime, then verifies the
-/// .asc detached signature against the downloaded archive.
+/// The key is never fetched over the network — it ships inside this
+/// binary and its fingerprint is checked against a hardcoded constant
+/// every time it's loaded. That means there's no keyserver round-trip
+/// for an attacker to intercept or a compromised keyserver response to
+/// swap a key into.
 fn verify_pgp_signature(file_path: &Path, sig_url: &str) -> Result<(), String> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(format!("tor-browser-builder/{APP_VERSION}"))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
+    if !is_trusted_torproject_url(sig_url) {
+        return Err(format!(
+            "refusing to fetch a signature from a URL that isn't https and under torproject.org: {sig_url}"
+        ));
+    }
+    let client = strict_client(Duration::from_secs(30))?;
 
     // Download the .asc detached signature
     let sig_bytes = client
@@ -338,21 +408,24 @@ fn verify_pgp_signature(file_path: &Path, sig_url: &str) -> Result<(), String> {
         .bytes()
         .map_err(|e| e.to_string())?;
 
-    // Fetch the Tor Browser Developers signing key from keys.openpgp.org
-    // Fingerprint: EF6E286DDA85EA2A4BA7DE684E2C6E8793298290
-    let key_url = "https://keys.openpgp.org/vks/v1/by-fingerprint/EF6E286DDA85EA2A4BA7DE684E2C6E8793298290";
-    let key_bytes = client
-        .get(key_url)
-        .send()
-        .map_err(|e| format!("failed to fetch Tor Browser signing key: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("signing key download failed: {e}"))?
-        .bytes()
-        .map_err(|e| e.to_string())?;
-
-    // Parse the key as an OpenPGP Cert
-    let cert = openpgp::Cert::from_bytes(&key_bytes)
-        .map_err(|e| format!("failed to parse Tor Browser signing key: {e}"))?;
+    // Parse the bundled key and make sure it's actually the key we think
+    // it is before trusting it for anything. This check is cheap and
+    // catches the key file ever getting out of sync with the fingerprint
+    // constant (e.g. an accidental edit) rather than failing silently.
+    let cert = openpgp::Cert::from_bytes(TOR_SIGNING_KEY_BYTES)
+        .map_err(|e| format!("failed to parse the bundled Tor Browser signing key: {e}"))?;
+    let expected_fingerprint: Fingerprint = TOR_SIGNING_KEY_FINGERPRINT
+        .parse()
+        .map_err(|e| format!("internal error parsing the pinned fingerprint constant: {e}"))?;
+    if cert.fingerprint() != expected_fingerprint {
+        return Err(format!(
+            "bundled signing key fingerprint does not match the pinned fingerprint \
+             ({} != {}) - refusing to trust it. This should never happen and means the \
+             app's own files were modified.",
+            cert.fingerprint(),
+            expected_fingerprint
+        ));
+    }
 
     // Read the file to verify
     let file_bytes = std::fs::read(file_path).map_err(|e| e.to_string())?;

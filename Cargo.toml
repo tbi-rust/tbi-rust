@@ -16,6 +16,8 @@ hex = "0.4"
 sequoia-openpgp = { version = "2.4", default-features = false, features = ["crypto-openssl"] }
 openssl = { version = "0.10", features = ["vendored"] }
 anyhow = "1"
+zeroize = "1"
+url = "2"
 
 [profile.release]
 opt-level = 3

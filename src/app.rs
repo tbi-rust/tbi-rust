@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 use egui::Color32;
+use zeroize::Zeroize;
 
 use crate::platform::{InstallScope, default_install_path, find_existing_install};
 use crate::theme::{Theme, palette, palette_dark};
@@ -67,6 +68,12 @@ pub(crate) struct TorBrowserBuilder {
     pub(crate) show_command_log: bool,
     /// Whether the About overlay is open.
     pub(crate) show_about: bool,
+    /// Set when the person has explicitly acknowledged installing a
+    /// release that has neither a checksum nor a signature to check it
+    /// against. Reset every time a fresh ConfirmInstall screen appears,
+    /// so an acknowledgment from a previous run never silently carries
+    /// over and waves through a later, different, unverified release.
+    pub(crate) unverified_ack: bool,
 }
 
 impl TorBrowserBuilder {
@@ -105,6 +112,7 @@ impl TorBrowserBuilder {
             command_log: Vec::new(),
             show_command_log: false,
             show_about: false,
+            unverified_ack: false,
         }
     }
 
@@ -123,6 +131,13 @@ impl TorBrowserBuilder {
         let install_dir = self.installation_path.clone();
         let scope = self.install_scope;
         let password = self.sudo_password.clone();
+        // The worker thread now owns its own copy; wipe the one sitting in
+        // the UI's text field the moment it's been handed off, so it
+        // doesn't linger in memory for the rest of the session. The person
+        // will need to retype it for a subsequent install, which is the
+        // right trade-off for not keeping a plaintext admin password
+        // parked in memory indefinitely.
+        self.sudo_password.zeroize();
         std::thread::spawn(move || {
             install::run_install_pipeline(install_dir, scope, password, tx, confirm_rx);
         });
@@ -143,6 +158,9 @@ impl TorBrowserBuilder {
                     WorkerEvent::State(s) => {
                         if matches!(s, AppState::Complete { .. } | AppState::Error(_)) {
                             done = true;
+                        }
+                        if matches!(s, AppState::ConfirmInstall { .. }) {
+                            self.unverified_ack = false;
                         }
                         self.state = s;
                     }
@@ -201,6 +219,20 @@ impl TorBrowserBuilder {
         match self.theme {
             Theme::Light => palette::PURPLE_SOFT,
             Theme::Dark => palette_dark::PURPLE_SOFT,
+        }
+    }
+
+    pub(crate) fn warning_soft(&self) -> Color32 {
+        match self.theme {
+            Theme::Light => palette::WARNING_SOFT,
+            Theme::Dark => palette_dark::WARNING_SOFT,
+        }
+    }
+
+    pub(crate) fn success_soft(&self) -> Color32 {
+        match self.theme {
+            Theme::Light => palette::SUCCESS_SOFT,
+            Theme::Dark => palette_dark::SUCCESS_SOFT,
         }
     }
 
