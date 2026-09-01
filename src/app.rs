@@ -105,7 +105,11 @@ impl TorBrowserBuilder {
             rx: None,
             confirm_tx: None,
             logo_bytes: include_bytes!("assets/tor_logo_tbb.svg"),
-            theme: Theme::Light,
+            // Default to the deeper "Void" variant - matches the tone of
+            // what this installer actually does better than starting on
+            // the dimmer "Dusk" palette. The in-app toggle still switches
+            // between the two.
+            theme: Theme::Dark,
             install_scope: InstallScope::User,
             sudo_password: String::new(),
             reveal_password: false,

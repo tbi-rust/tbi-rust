@@ -2,7 +2,7 @@
 name = "tor-browser-builder"
 version = "0.2.0"
 edition = "2021"
-
+build = "src/build.rs"
 [dependencies]
 eframe = "0.32"
 egui = "0.32"
@@ -23,3 +23,9 @@ url = "2"
 opt-level = 3
 lto = true
 strip = true
+
+[build-dependencies]
+icns = "0.4.0"
+resvg = "0.48.1"
+tiny-skia = "0.12.0"
+usvg = "0.48.1"
