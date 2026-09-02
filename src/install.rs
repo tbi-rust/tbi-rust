@@ -15,7 +15,7 @@ use zeroize::Zeroizing;
 
 use crate::APP_VERSION;
 use crate::app::AppState;
-use crate::platform::{InstallScope, platform_label, release_json_filename, archive_extension};
+use crate::platform::{InstallScope, platform_label, release_json_filename, archive_extension, find_file};
 
 /// The Tor Browser Developers signing key, bundled directly into this
 /// binary rather than fetched from a keyserver at runtime. Sourced from
