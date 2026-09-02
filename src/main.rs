@@ -11,7 +11,7 @@ use app::TorBrowserBuilder;
 
 /// This app's own version, shown in the About screen and sent as part of
 /// the HTTP User-Agent when talking to the Tor Project's release API.
-pub(crate) const APP_VERSION: &str = "0.07";
+pub(crate) const APP_VERSION: &str = "0.1";
 /// Credited in the About screen.
 pub(crate) const APP_AUTHOR: &str = "Ribhav Sai Ramanuja Revalli";
 
